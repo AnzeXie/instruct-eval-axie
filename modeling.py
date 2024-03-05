@@ -1,6 +1,6 @@
 import json
 import signal
-import time
+import time,json
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -30,6 +30,10 @@ from transformers import (
 
 import quant
 
+import os
+from mistralai.client import MistralClient
+from mistralai.models.chat_completion import ChatMessage
+import requests
 
 class EvalModel(BaseModel, arbitrary_types_allowed=True):
     model_path: str
@@ -67,6 +71,8 @@ class OpenAIModel(EvalModel):
             info = json.load(f)
             openai.api_key = info["key"]
             self.engine = info["engine"]
+        # openai.api_key = os.environ["OPENAI_API_KEY"] 
+        # self.engine = "gpt-3.5-turbo"
 
         if self.use_azure:
             openai.api_type = "azure"
@@ -87,6 +93,7 @@ class OpenAIModel(EvalModel):
                     timeout=self.timeout,
                     request_timeout=self.timeout,
                     temperature=0,  # this is the degree of randomness of the model's output
+                    max_tokens=5,
                     **kwargs,
                 )
                 if response.choices[0].finish_reason == "content_filter":
@@ -129,6 +136,68 @@ class OpenAIModel(EvalModel):
                     time.sleep(3)
         return "Z"
 
+
+class MistralModel(EvalModel):
+    max_input_length: int = 2048
+    max_output_length: int = 2048
+    
+    def load(self):
+        pass
+    
+    def run(self, prompt: str, **kwargs) -> str:
+        # print(f"Prompt: {prompt}")
+        api_key = os.environ["MISTRAL_API_KEY"]    
+        # model = "mistral-large-latest"
+        model = "open-mistral-7b"
+        client = MistralClient(api_key=api_key)
+        
+        messages = [ChatMessage(role="user", content=prompt)]
+        output = None
+        time_sleep = [2,4,8]
+        i = 0
+        
+        while output is None:
+            i += 1
+            try:
+                tic = time.time()
+                chat_response = client.chat(
+                    model=model,
+                    messages=messages,
+                    max_tokens=10
+                )
+                toc = time.time()
+                
+                output = chat_response.choices[0].message.content
+                
+                output_log = {
+                    "output": output,
+                    "time_len": str(toc-tic),
+                    "message": prompt,
+                }
+                
+                log_path = "/home/haozhang/axie/mistral_eval/instruct-eval/mistral_7b_mmlu.log"
+                with open(log_path, 'a') as jf:
+                    json.dump(output_log, jf)
+                jf.close()
+                
+            except Exception as e:
+                print(e)
+                output = None
+                if i <= 300:
+                    time.sleep(i*2)
+                    print(f"sleep for {i*2}s")
+                else:
+                    time.sleep(300)
+                    i=0
+        
+        # print("*", end = " ")
+        
+        return output
+        
+    
+    def check_valid_length(self, prompt: str) -> bool:
+        return True
+    
 
 class SeqToSeqModel(EvalModel):
     model_path: str
@@ -498,6 +567,7 @@ def select_model(model_name: str, **kwargs) -> EvalModel:
         openai=OpenAIModel,
         rwkv=RWKVModel,
         gptq=GPTQModel,
+        mistral=MistralModel
     )
     model_class = model_map.get(model_name)
     if model_class is None:
